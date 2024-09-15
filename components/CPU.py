@@ -1,9 +1,24 @@
 from components.Memory import Memory
 
+"""
+Indexed indirect addressing - 6 cycles - LDA ($20, X)
+
+Indirect indexed addressing - 5+1 cycles - LDA ($20), Y
+
+"""
+
 OP_CODES = {
+    'TEST': 'X',
+    # LDA
     'LDA_IMM': 0xA9,
     'LDA_ZPG': 0xA5,
-    'LDA_ZPX': 0xB5
+    'LDA_ZPX': 0xB5,
+    'LDA_ABS': 0xAD,
+    'LDA_ABX': 0xBD,
+    'LDA_ABY': 0xB9,
+    'LDA_INX': 0xA1,
+    'LDA_INY': 0xB1
+    # LDX
 }
 
 """
@@ -33,6 +48,9 @@ class CPU():
 
         self.memory = Memory()
 
+        # test use
+        self.taken_cycles = 0
+
     def reset(self):
         self.pc = 0xFFFC
         self.sp = 0x0100
@@ -41,55 +59,157 @@ class CPU():
 
         self.c, self.z, self.i, self.d, self.b, self.v, self.n = 0, 0, 0, 0, 0, 0, 0
 
-    def fetch(self):
-        # multi-byte instructions?
-        instruction = self.memory.data[self.pc]
+    def fetch_byte(self):
+        val = self.memory.data[self.pc]
         self.pc += 1
-        return instruction
+        return val
+
+    def fetch_bytes(self, bytes):
+        val = 0
+        for _ in range(bytes):
+            val |= self.memory.data[self.pc] << (8 * _)
+            self.pc += 1
+        return val
+
+    def fetch_bytes_from_location(self, loc, bytes):
+        val = 0
+        for _ in range(bytes):
+            val |= self.memory.data[loc] << (8 * _)
+            loc += 1
+        return val
 
     def read(self, address):
         instruction = self.memory.data[address]
         return instruction
 
-    def load(self, cycles, location, data):
-        self.memory.data[location] = data
-        self.pc += 1
-        cycles -= 1
-
-    def execute(self, cycles):
+    def execute(self, expected_cycles):
 
         # fetch instruction each cycle
-        while cycles > 0:
+        while expected_cycles > 0:
 
-            ins = self.fetch()
-            cycles -= 1
+            ins = self.fetch_byte()
+            expected_cycles -= 1
+            self.taken_cycles += 1
 
             if ins == OP_CODES['LDA_IMM']:
-                data = self.fetch()
-                cycles -= 1
+                data = self.fetch_byte()
+                expected_cycles -= 1
+                self.taken_cycles += 1
+
                 self.a = data
                 self.z = 1 if self.a == 0 else 0
                 self.n = 1 if (self.a & 0x80) != 0 else 0
 
             elif ins == OP_CODES['LDA_ZPG']:
-                zero_page_addr = self.fetch()
-                cycles -= 1
+                zero_page_addr = self.fetch_byte()
+                expected_cycles -= 1
+                self.taken_cycles += 1
                 val = self.read(zero_page_addr)  # reading takes no cycles
                 self.a = val
-                cycles -= 1
+                expected_cycles -= 1
+                self.taken_cycles += 1
                 self.z = 1 if self.a == 0 else 0
                 self.n = 1 if (self.a & 0x80) != 0 else 0
 
             elif ins == OP_CODES['LDA_ZPX']:
-                zero_page_addr = self.fetch()
-                cycles -= 1
+                zero_page_addr = self.fetch_byte()
+                expected_cycles -= 1
+                self.taken_cycles += 1
                 addr = zero_page_addr + self.x
-                cycles -= 1
+                expected_cycles -= 1
+                self.taken_cycles += 1
                 val = self.read(addr)
                 self.a = val
-                cycles -= 1
+                expected_cycles -= 1
+                self.taken_cycles += 1
                 self.z = 1 if self.a == 0 else 0
                 self.n = 1 if (self.a & 0x80) != 0 else 0
 
+            elif ins == OP_CODES['LDA_ABS']:
+                addr = self.fetch_bytes(bytes=2)
+                expected_cycles -= 2
+                self.taken_cycles += 2
+                val = self.read(addr)
+                self.a = val
+                expected_cycles -= 1
+                self.taken_cycles += 1
+                self.z = 1 if self.a == 0 else 0
+                self.n = 1 if (self.a & 0x80) != 0 else 0
+
+            elif ins == OP_CODES['LDA_ABX']:
+                addr = self.fetch_bytes(bytes=2)
+                expected_cycles -= 2
+                self.taken_cycles += 2
+
+                og_pg = addr & 0xFF00
+                new_addr = addr + self.x
+                self.a = self.read(new_addr)
+                expected_cycles -= 1
+                self.taken_cycles += 1
+
+                new_pg = new_addr & 0xFF00
+                if og_pg != new_pg:
+                    expected_cycles -= 1
+                    self.taken_cycles += 1
+
+            elif ins == OP_CODES['LDA_ABY']:
+                addr = self.fetch_bytes(bytes=2)
+                expected_cycles -= 2
+                self.taken_cycles += 2
+
+                og_pg = addr & 0xFF00
+                new_addr = addr + self.y
+                self.a = self.read(new_addr)
+                expected_cycles -= 1
+                self.taken_cycles += 1
+
+                new_pg = new_addr & 0xFF00
+                if og_pg != new_pg:
+                    expected_cycles -= 1
+                    self.taken_cycles += 1
+
+            elif ins == OP_CODES['LDA_INX']:
+                addr = self.fetch_byte()
+                expected_cycles -= 1
+                self.taken_cycles += 1
+
+                addr += self.x
+                expected_cycles -= 1
+                self.taken_cycles += 1
+
+                val_addr = self.fetch_bytes_from_location(loc=addr, bytes=2)
+                expected_cycles -= 2
+                self.taken_cycles += 2
+
+                self.a = self.read(val_addr)
+                expected_cycles -= 1
+                self.taken_cycles += 1
+
+            elif ins == OP_CODES['LDA_INY']:
+                zp_addr = self.fetch_byte()
+                expected_cycles -= 1
+                self.taken_cycles += 1
+
+                addr = self.fetch_bytes_from_location(loc=zp_addr, bytes=2)
+                expected_cycles -= 2
+                self.taken_cycles += 2
+
+                og_pg = addr & 0xFF00
+                new_addr = addr + self.y
+                self.a = self.read(new_addr)
+                expected_cycles -= 1
+                self.taken_cycles += 1
+
+                new_pg = new_addr & 0xFF00
+                if og_pg != new_pg:
+                    expected_cycles -= 1
+                    self.taken_cycles += 1
+
+            elif ins == OP_CODES['TEST']:
+                pass
+
             else:
-                print('Code not recognized.')
+                print(f'Code not recognized: {ins}')
+                raise ValueError
+
+
